@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 """
-Polední menu dashboard v5.4
+Polední menu dashboard v5.5
 - jeden hlavní skript pro všechny pracovní dny, bez pěti denních wrapperů
 - HTML scraping zůstává hlavní zdroj, protože menu bývá na statických stránkách
 - volitelný RSS/Atom fallback: použije se až když HTML parser nenajde položky
@@ -35,6 +35,7 @@ import base64
 import html
 import json
 import re
+import socket
 import sys
 import webbrowser
 import time
@@ -53,8 +54,23 @@ urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
 
 USER_AGENT = (
     "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
-    "(KHTML, like Gecko) Chrome/124.0 Safari/537.36 lunch-dashboard/5.4"
+    "(KHTML, like Gecko) Chrome/124.0 Safari/537.36 lunch-dashboard/5.5"
 )
+
+# Některé CI/cloudové prostředí může zkusit pro problematické weby IPv6,
+# i když cesta ven vede jen přes IPv4. U DnešníOběd.cz to může skončit
+# chybou Network is unreachable. Proto pro tento host preferujeme IPv4.
+_ORIGINAL_GETADDRINFO = socket.getaddrinfo
+IPV4_PREFERRED_HOSTS = {"www.dnesniobed.cz", "dnesniobed.cz"}
+
+def _getaddrinfo_ipv4_preferred(host, port, family=0, type=0, proto=0, flags=0):
+    results = _ORIGINAL_GETADDRINFO(host, port, family, type, proto, flags)
+    if str(host).lower() in IPV4_PREFERRED_HOSTS:
+        ipv4 = [r for r in results if r[0] == socket.AF_INET]
+        return ipv4 or results
+    return results
+
+socket.getaddrinfo = _getaddrinfo_ipv4_preferred
 
 DAYS = ["pondělí", "úterý", "středa", "čtvrtek", "pátek"]
 DAY_ALIASES = {
@@ -151,6 +167,7 @@ RESTAURANTS = [
         "U Bansethů",
         [
             "https://www.dnesniobed.cz/restaurace-hospoda/nusle_u-bansethu-a-basta",
+            "https://www.firmy.cz/detail/684629-restaurace-u-bansethu-praha-nusle.html",
             "https://www.ubansethu.cz/poledni-nabidka/",
         ],
         "external_daily",
@@ -1578,45 +1595,161 @@ def render_dashboard(results: Iterable[dict], output: Path, refresh_seconds: int
 <meta http-equiv="refresh" content="{refresh_seconds}">
 <title>Polední menu – {html.escape(DAY_TITLE[target_day])}</title>
 <style>
-:root {{
-  --bg: #f4efe7; --card: #fffdf8; --text: #1c1917; --muted: #766f66;
-  --line: #e6ded2; --accent: #8b3f1d; --price: #111827; --soft: #fbf3e7;
-}}
+/* TV-safe CSS: záměrně bez CSS variables, clamp(), gridu a gradientů.
+   Některé smart TV prohlížeče jsou starší a moderní CSS ignorují. */
 * {{ box-sizing: border-box; }}
+html, body {{
+  margin: 0;
+  padding: 0;
+  width: 100%;
+  min-height: 100%;
+}}
 body {{
-  margin: 0; min-height: 100vh; padding: 28px;
-  background: radial-gradient(circle at 12% 0%, #fff7df 0, var(--bg) 34%, #eee5da 100%);
-  color: var(--text);
-  font-family: Inter, Segoe UI, Roboto, Arial, sans-serif;
+  padding: 24px;
+  background: #f4efe7;
+  color: #1c1917;
+  font-family: Arial, Helvetica, sans-serif;
 }}
-.topbar {{ display:flex; align-items:flex-end; justify-content:space-between; gap:24px; margin-bottom:22px; }}
-h1 {{ margin:0; font-size:clamp(38px, 4.3vw, 72px); line-height:.95; letter-spacing:-.06em; }}
-.subtitle {{ color: var(--accent); font-size:clamp(20px, 1.8vw, 32px); font-weight:850; margin-top:6px; }}
-.timestamp {{ color:var(--muted); font-size:clamp(15px, 1.35vw, 23px); white-space:nowrap; }}
-.grid {{ display:grid; grid-template-columns:repeat(3, minmax(0, 1fr)); gap:18px; }}
+.topbar {{
+  display: table;
+  width: 100%;
+  margin-bottom: 20px;
+}}
+.topbar > div {{
+  display: table-cell;
+  vertical-align: bottom;
+}}
+.topbar > div:last-child {{
+  text-align: right;
+}}
+h1 {{
+  margin: 0;
+  font-size: 60px;
+  line-height: 0.95;
+  letter-spacing: -2px;
+}}
+.subtitle {{
+  margin-top: 6px;
+  color: #8b3f1d;
+  font-size: 30px;
+  font-weight: 800;
+}}
+.timestamp {{
+  color: #766f66;
+  font-size: 18px;
+  white-space: nowrap;
+}}
+.grid {{
+  display: block;
+  width: 100%;
+  font-size: 0;
+}}
 .card {{
-  background:rgba(255,253,248,.96); border:1px solid var(--line); border-radius:26px;
-  padding:18px 20px 16px; min-height:31vh; box-shadow:0 18px 50px rgba(61,45,30,.08);
-  overflow:hidden;
+  display: inline-block;
+  vertical-align: top;
+  width: 32%;
+  min-height: 310px;
+  margin: 0 1.3% 18px 0;
+  padding: 18px 20px 16px;
+  background: #fffdf8;
+  border: 1px solid #e6ded2;
+  border-radius: 22px;
+  box-shadow: 0 8px 22px rgba(61,45,30,0.10);
+  overflow: hidden;
+  font-size: 16px;
 }}
-.card header {{ display:flex; justify-content:space-between; align-items:baseline; gap:12px; padding-bottom:10px; border-bottom:1px solid var(--line); margin-bottom:12px; }}
-h2 {{ margin:0; font-size:clamp(23px, 2vw, 34px); letter-spacing:-.035em; }}
-a {{ color:var(--muted); text-decoration:none; font-size:12px; }}
+.card:nth-child(3n) {{
+  margin-right: 0;
+}}
+.card header {{
+  display: table;
+  width: 100%;
+  padding-bottom: 10px;
+  margin-bottom: 12px;
+  border-bottom: 1px solid #e6ded2;
+}}
+.card header h2, .card header a {{
+  display: table-cell;
+  vertical-align: baseline;
+}}
+h2 {{
+  margin: 0;
+  font-size: 30px;
+  line-height: 1.05;
+  letter-spacing: -1px;
+}}
+a {{
+  color: #766f66;
+  text-decoration: none;
+  font-size: 12px;
+  text-align: right;
+  white-space: nowrap;
+}}
 .section-label {{
-  display:inline-block; margin:4px 0 7px; padding:4px 9px; border-radius:999px;
-  background:var(--soft); color:var(--accent); font-weight:800; font-size:clamp(12px, .95vw, 15px);
-  text-transform:uppercase; letter-spacing:.04em;
+  display: inline-block;
+  margin: 4px 0 7px;
+  padding: 4px 9px;
+  border-radius: 999px;
+  background: #fbf3e7;
+  color: #8b3f1d;
+  font-weight: 800;
+  font-size: 13px;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
 }}
-.dish {{ display:grid; grid-template-columns:1fr auto; column-gap:13px; align-items:start; padding:7px 0; border-bottom:1px dashed #eadfce; }}
-.dish:last-child {{ border-bottom:0; }}
-.dish-title {{ font-size:clamp(15px, 1.18vw, 21px); line-height:1.22; font-weight:650; }}
-.price {{ font-size:clamp(15px, 1.14vw, 21px); line-height:1.15; font-weight:900; color:var(--price); white-space:nowrap; }}
-.note {{ grid-column:1 / -1; color:var(--muted); font-size:clamp(12px, .95vw, 16px); margin-top:2px; }}
-.error, .empty {{ color:var(--muted); font-size:18px; line-height:1.35; padding:12px 0; }}
-.empty {{ opacity:.75; }}
-.empty span {{ font-size:13px; }}
-@media (max-width: 1350px) {{ .grid {{ grid-template-columns:repeat(2, minmax(0, 1fr)); }} }}
-@media (max-width: 820px) {{ body {{ padding:16px; }} .topbar {{ display:block; }} .grid {{ grid-template-columns:1fr; }} .card {{ min-height:auto; }} }}
+.dish {{
+  display: table;
+  width: 100%;
+  padding: 7px 0;
+  border-bottom: 1px dashed #eadfce;
+}}
+.dish:last-child {{ border-bottom: 0; }}
+.dish-title {{
+  display: table-cell;
+  vertical-align: top;
+  padding-right: 12px;
+  font-size: 18px;
+  line-height: 1.22;
+  font-weight: 650;
+}}
+.price {{
+  display: table-cell;
+  vertical-align: top;
+  color: #111827;
+  font-size: 18px;
+  line-height: 1.15;
+  font-weight: 900;
+  white-space: nowrap;
+  text-align: right;
+}}
+.note {{
+  display: block;
+  color: #766f66;
+  font-size: 14px;
+  line-height: 1.25;
+  margin-top: 2px;
+}}
+.error, .empty {{
+  color: #766f66;
+  font-size: 18px;
+  line-height: 1.35;
+  padding: 12px 0;
+}}
+.empty {{ opacity: 0.75; }}
+.empty span {{ font-size: 13px; }}
+@media (max-width: 1200px) {{
+  .card {{ width: 48.5%; }}
+  .card:nth-child(3n) {{ margin-right: 1.3%; }}
+  .card:nth-child(2n) {{ margin-right: 0; }}
+}}
+@media (max-width: 760px) {{
+  body {{ padding: 14px; }}
+  .topbar, .topbar > div {{ display: block; text-align: left; }}
+  .timestamp {{ margin-top: 8px; }}
+  h1 {{ font-size: 42px; }}
+  .subtitle {{ font-size: 24px; }}
+  .card {{ display: block; width: 100%; min-height: auto; margin-right: 0; }}
+}}
 </style>
 </head>
 <body>
@@ -1633,7 +1766,7 @@ a {{ color:var(--muted); text-decoration:none; font-size:12px; }}
 
 
 def main(argv: list[str] | None = None) -> int:
-    ap = argparse.ArgumentParser(description="Polední menu dashboard v5.4")
+    ap = argparse.ArgumentParser(description="Polední menu dashboard v5.5")
     ap.add_argument("--day", default=None, help="pondeli, utery, streda, ctvrtek nebo patek. Výchozí je dnešní pracovní den.")
     ap.add_argument("--output", default="dashboard.html", help="Kam uložit HTML. Relativní cesta se ukládá vedle skriptu.")
     ap.add_argument("--refresh", type=int, default=1800, help="Auto-refresh v sekundách")
