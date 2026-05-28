@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 """
-Polední menu dashboard v5.5
+Polední menu dashboard v5.6
 - jeden hlavní skript pro všechny pracovní dny, bez pěti denních wrapperů
 - HTML scraping zůstává hlavní zdroj, protože menu bývá na statických stránkách
 - volitelný RSS/Atom fallback: použije se až když HTML parser nenajde položky
@@ -54,7 +54,7 @@ urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
 
 USER_AGENT = (
     "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
-    "(KHTML, like Gecko) Chrome/124.0 Safari/537.36 lunch-dashboard/5.5"
+    "(KHTML, like Gecko) Chrome/124.0 Safari/537.36 lunch-dashboard/5.6"
 )
 
 # Některé CI/cloudové prostředí může zkusit pro problematické weby IPv6,
@@ -1556,16 +1556,23 @@ def render_dashboard(results: Iterable[dict], output: Path, refresh_seconds: int
         if items:
             rows: list[str] = []
             last_section = None
+            # Na TV zbytečně zabírají místo dlouhé sekční štítky u restaurací,
+            # kde jsou spíš navigační než informační. Palatino/Klika/Kandelábr
+            # je necháváme, pokud je parser skutečně potřebuje.
+            suppress_sections = r.get("name") in {"Na Paloučku", "U Bansethů"}
             for item in items:
-                if item.section and item.section != last_section:
+                if item.section and item.section != last_section and not suppress_sections:
                     rows.append(f"<div class='section-label'>{html.escape(item.section)}</div>")
                     last_section = item.section
                 price = f"<span class='price'>{html.escape(item.price)}</span>" if item.price else ""
                 note = f"<div class='note'>{html.escape(item.note)}</div>" if item.note else ""
                 rows.append(
                     "<div class='dish'>"
+                    "<div class='dish-main'>"
                     f"<div class='dish-title'>{html.escape(item.title)}</div>"
-                    f"{price}{note}"
+                    f"{price}"
+                    "</div>"
+                    f"{note}"
                     "</div>"
                 )
             body = "\n".join(rows)
@@ -1605,7 +1612,7 @@ html, body {{
   min-height: 100%;
 }}
 body {{
-  padding: 24px;
+  padding: 14px;
   background: #f4efe7;
   color: #1c1917;
   font-family: Arial, Helvetica, sans-serif;
@@ -1613,7 +1620,7 @@ body {{
 .topbar {{
   display: table;
   width: 100%;
-  margin-bottom: 20px;
+  margin-bottom: 10px;
 }}
 .topbar > div {{
   display: table-cell;
@@ -1624,19 +1631,19 @@ body {{
 }}
 h1 {{
   margin: 0;
-  font-size: 60px;
+  font-size: 46px;
   line-height: 0.95;
-  letter-spacing: -2px;
+  letter-spacing: -1px;
 }}
 .subtitle {{
-  margin-top: 6px;
+  margin-top: 3px;
   color: #8b3f1d;
-  font-size: 30px;
+  font-size: 23px;
   font-weight: 800;
 }}
 .timestamp {{
   color: #766f66;
-  font-size: 18px;
+  font-size: 14px;
   white-space: nowrap;
 }}
 .grid {{
@@ -1647,13 +1654,13 @@ h1 {{
 .card {{
   display: inline-block;
   vertical-align: top;
-  width: 32%;
-  min-height: 310px;
-  margin: 0 1.3% 18px 0;
-  padding: 18px 20px 16px;
+  width: 32.45%;
+  min-height: 0;
+  margin: 0 0.9% 10px 0;
+  padding: 11px 13px 10px;
   background: #fffdf8;
   border: 1px solid #e6ded2;
-  border-radius: 22px;
+  border-radius: 16px;
   box-shadow: 0 8px 22px rgba(61,45,30,0.10);
   overflow: hidden;
   font-size: 16px;
@@ -1664,8 +1671,8 @@ h1 {{
 .card header {{
   display: table;
   width: 100%;
-  padding-bottom: 10px;
-  margin-bottom: 12px;
+  padding-bottom: 6px;
+  margin-bottom: 6px;
   border-bottom: 1px solid #e6ded2;
 }}
 .card header h2, .card header a {{
@@ -1674,7 +1681,7 @@ h1 {{
 }}
 h2 {{
   margin: 0;
-  font-size: 30px;
+  font-size: 23px;
   line-height: 1.05;
   letter-spacing: -1px;
 }}
@@ -1687,37 +1694,41 @@ a {{
 }}
 .section-label {{
   display: inline-block;
-  margin: 4px 0 7px;
-  padding: 4px 9px;
+  margin: 2px 0 4px;
+  padding: 3px 7px;
   border-radius: 999px;
   background: #fbf3e7;
   color: #8b3f1d;
   font-weight: 800;
-  font-size: 13px;
+  font-size: 11px;
   text-transform: uppercase;
   letter-spacing: 0.04em;
 }}
 .dish {{
-  display: table;
+  display: block;
   width: 100%;
-  padding: 7px 0;
+  padding: 4px 0;
   border-bottom: 1px dashed #eadfce;
 }}
 .dish:last-child {{ border-bottom: 0; }}
+.dish-main {{
+  display: table;
+  width: 100%;
+}}
 .dish-title {{
   display: table-cell;
   vertical-align: top;
-  padding-right: 12px;
-  font-size: 18px;
-  line-height: 1.22;
+  padding-right: 8px;
+  font-size: 15px;
+  line-height: 1.15;
   font-weight: 650;
 }}
 .price {{
   display: table-cell;
   vertical-align: top;
   color: #111827;
-  font-size: 18px;
-  line-height: 1.15;
+  font-size: 15px;
+  line-height: 1.1;
   font-weight: 900;
   white-space: nowrap;
   text-align: right;
@@ -1725,14 +1736,15 @@ a {{
 .note {{
   display: block;
   color: #766f66;
-  font-size: 14px;
-  line-height: 1.25;
+  font-size: 12px;
+  line-height: 1.18;
   margin-top: 2px;
+  padding-right: 42px;
 }}
 .error, .empty {{
   color: #766f66;
-  font-size: 18px;
-  line-height: 1.35;
+  font-size: 15px;
+  line-height: 1.25;
   padding: 12px 0;
 }}
 .empty {{ opacity: 0.75; }}
@@ -1766,7 +1778,7 @@ a {{
 
 
 def main(argv: list[str] | None = None) -> int:
-    ap = argparse.ArgumentParser(description="Polední menu dashboard v5.5")
+    ap = argparse.ArgumentParser(description="Polední menu dashboard v5.6")
     ap.add_argument("--day", default=None, help="pondeli, utery, streda, ctvrtek nebo patek. Výchozí je dnešní pracovní den.")
     ap.add_argument("--output", default="dashboard.html", help="Kam uložit HTML. Relativní cesta se ukládá vedle skriptu.")
     ap.add_argument("--refresh", type=int, default=1800, help="Auto-refresh v sekundách")
