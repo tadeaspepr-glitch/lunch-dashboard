@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 """
-Polední menu dashboard v5.6
+Polední menu dashboard v5.7
 - jeden hlavní skript pro všechny pracovní dny, bez pěti denních wrapperů
 - HTML scraping zůstává hlavní zdroj, protože menu bývá na statických stránkách
 - volitelný RSS/Atom fallback: použije se až když HTML parser nenajde položky
@@ -54,7 +54,7 @@ urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
 
 USER_AGENT = (
     "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
-    "(KHTML, like Gecko) Chrome/124.0 Safari/537.36 lunch-dashboard/5.6"
+    "(KHTML, like Gecko) Chrome/124.0 Safari/537.36 lunch-dashboard/5.7"
 )
 
 # Některé CI/cloudové prostředí může zkusit pro problematické weby IPv6,
@@ -166,7 +166,12 @@ RESTAURANTS = [
     Restaurant(
         "U Bansethů",
         [
+            # Primární zdroj. V GitHub Actions někdy zlobí www/IPv6, proto jsou
+            # hned pod ním připravené non-www a HTTP varianty stejné stránky.
             "https://www.dnesniobed.cz/restaurace-hospoda/nusle_u-bansethu-a-basta",
+            "https://dnesniobed.cz/restaurace-hospoda/nusle_u-bansethu-a-basta",
+            "http://www.dnesniobed.cz/restaurace-hospoda/nusle_u-bansethu-a-basta",
+            "http://dnesniobed.cz/restaurace-hospoda/nusle_u-bansethu-a-basta",
             "https://www.firmy.cz/detail/684629-restaurace-u-bansethu-praha-nusle.html",
             "https://www.ubansethu.cz/poledni-nabidka/",
         ],
@@ -223,21 +228,32 @@ def fetch_html(url: str, timeout: int = 25) -> str:
         "User-Agent": USER_AGENT,
         "Accept-Language": "cs-CZ,cs;q=0.9,en;q=0.6",
         "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
+        "Connection": "close",
     }
     # Zomato widget je vložený v iframe na oficiálním webu Kandelábru.
     # Referer zvyšuje šanci, že widget nevrátí prázdnou/ochrannou stránku.
     if "zomato.com/widgets/daily_menu.php" in url:
         headers["Referer"] = "https://www.restaurantkandelabr.cz/poledni-menu/"
-    r = requests.get(
-        url,
-        headers=headers,
-        timeout=timeout,
-        verify=False,
-    )
-    r.raise_for_status()
-    r.encoding = r.apparent_encoding or r.encoding
-    return r.text
 
+    last_exc: Exception | None = None
+    for attempt in range(3):
+        try:
+            r = requests.get(
+                url,
+                headers=headers,
+                timeout=timeout,
+                verify=False,
+            )
+            r.raise_for_status()
+            r.encoding = r.apparent_encoding or r.encoding
+            return r.text
+        except Exception as exc:  # noqa: BLE001
+            last_exc = exc
+            if attempt < 2:
+                time.sleep(1.2 * (attempt + 1))
+                continue
+            raise
+    raise last_exc or RuntimeError(f"Nepodařilo se stáhnout {url}")
 
 def slugify(value: str) -> str:
     value = without_diacritics(value)
@@ -868,7 +884,36 @@ def parse_palatino(lines: list[str], max_items: int, target_day: str) -> list[Me
     day_lines = extract_day_section(lines, target_day)
     if not day_lines:
         return []
-    return parse_items_from_lines(day_lines, max_items, split_multiline_note=True)
+
+    # Palatino občas za páteční nabídku přimíchá dezerty nebo obecné bloky.
+    # Pro dashboard chceme jen obědovou část konkrétního dne.
+    filtered: list[str] = []
+    for raw in day_lines:
+        line = clean_line(raw)
+        low = without_diacritics(line)
+        if not line:
+            continue
+        if low in {"dezert", "dezerty", "dolci", "dessert", "desserts"}:
+            break
+        if any(stop in low for stop in (
+            "dezert", "dezerty", "dolci", "dessert", "napoj", "napoje",
+            "vinny listek", "jidelni listek", "kontakt", "rezervace",
+            "rozvoz", "pizza menu", "stale menu", "akce", "zobrazit",
+        )) and not PRICE_RE.search(line):
+            break
+        filtered.append(line)
+
+    items = parse_items_from_lines(filtered, max_items, split_multiline_note=True)
+    cleaned: list[MenuItem] = []
+    for item in items:
+        low_title = without_diacritics(item.title)
+        low_note = without_diacritics(item.note)
+        if any(bad in low_title for bad in ("dezert", "dezerty", "dolci", "dessert")):
+            continue
+        if any(bad in low_note for bad in ("dezert", "dezerty", "dolci", "dessert")):
+            item.note = ""
+        cleaned.append(item)
+    return cleaned[:max_items]
 
 
 def parse_klika(lines: list[str], max_items: int, target_day: str) -> list[MenuItem]:
@@ -982,7 +1027,6 @@ def parse_external_daily(lines: list[str], max_items: int, target_day: str) -> l
             return False
         return (
             low in {"denni menu", "jidelni listek", "polevka", "polevky", "dezert"}
-            or "polevka" in low
             or "delikates" in low
             or "z hrnce" in low
             or "dnesni menu" in low
@@ -1189,11 +1233,10 @@ def parse_external_daily(lines: list[str], max_items: int, target_day: str) -> l
 def parse_kvetnice(lines: list[str], max_items: int, target_day: str) -> list[MenuItem]:
     """Speciální parser pro Na Květnici.
 
-    V4.7: podle debug dumpu z uživatelova počítače se plná cenová polední
-    sekce z webu často vůbec nevrací. Místo ní se do HTML dostane několik
-    jídelních řádků před textem "Loading...". Proto parser nejdřív zkusí
-    standardní cenovou sekci, ale když ji nenajde, vrátí alespoň tyto
-    smysluplné jídelní řádky bez cen.
+    Květnice má polední sekci přímo v homepage, ale před ní i za ní je hodně
+    instagramového a obecného obsahu. Parser proto bere jen blok od „Polední
+    nabídka 11:00 - 15:00“ po „Nápoje k menu“ a pracuje jen s položkami s cenou.
+    Když cenové menu není dostupné, vrátí prázdno a dashboard ukáže hlášku.
     """
 
     def norm(value: str) -> str:
@@ -1224,133 +1267,106 @@ def parse_kvetnice(lines: list[str], max_items: int, target_day: str) -> list[Me
             return True
         return False
 
-    def looks_like_food_line(line: str) -> bool:
-        """Tolerantní fallback pro Květnici, když nejsou ceny.
-
-        Cílem není poznat každé české jídlo, ale odlišit krátké jídelní řádky
-        od instagramových textů a patičky webu.
-        """
-        raw = clean_line(line)
-        low = norm(raw)
-        if not raw or is_skip(raw) or is_stop(raw):
-            return False
-        if len(raw) < 4 or len(raw) > 95:
-            return False
-        if "..." in raw or "…" in raw:
-            return False
-        if any(bad in low for bad in (
-            "existuji mista", "zitra to", "ms v hokeji", "doma ti", "manzelka",
-            "facebook", "instagram", "template", "website", "loading", "karneval",
-        )):
-            return False
-        food_keywords = (
-            "polevka", "vyvar", "drstkova", "utopenec", "kureci", "kureci", "kridelka",
-            "palicky", "hovezi", "veprove", "veprova", "rizek", "gulas", "salat", "gnocchi",
-            "spagety", "penne", "pizza", "brambor", "testov", "masem", "nudlemi",
-            "zeleninou", "naklevu", "nalevu", "sladkokyselem", "poctiva",
-        )
-        return any(k in low for k in food_keywords)
-
     clean = [clean_line(x) for x in lines if clean_line(x)]
+    if not clean:
+        return []
 
-    # 1) Standardní cesta: najít cenovou polední sekci.
-    candidates: list[list[str]] = []
+    # Vyber jen polední blok. Na webu je teď zřetelně mezi „Polední nabídka“
+    # a „Nápoje k menu“. Když se text slije, nouzově vytvoříme řádky podle cen.
+    start_idx = None
     for i, line in enumerate(clean):
         low = norm(line)
-        if "poledni nabidka" not in low and low not in {"polevky", "dnesni menu", "specialita tydne"}:
-            continue
-        block: list[str] = []
-        for raw in clean[i:]:
-            if block and is_stop(raw):
+        if "poledni nabidka" in low and ("11:00" in line or "15:00" in line or i < len(clean) - 3):
+            start_idx = i
+            break
+    if start_idx is None:
+        for i, line in enumerate(clean):
+            if norm(line) in {"polevky", "poledni nabidka"}:
+                start_idx = i
                 break
-            if is_skip(raw):
-                continue
-            block.append(raw)
-            if len(block) > 90:
-                break
-        if block:
-            candidates.append(block)
-
-    def score(block: list[str]) -> int:
-        value = 0
-        for x in block:
-            low = norm(x)
-            if PRICE_RE.search(x):
-                value += 10
-            if low in {"polevky", "poledni nabidka", "specialita tydne"} or low.startswith("dnesni menu"):
-                value += 3
-            if is_stop(x):
-                value -= 10
-        return value
+    if start_idx is None:
+        return []
 
     block: list[str] = []
-    if candidates:
-        candidates.sort(key=score, reverse=True)
-        if score(candidates[0]) > 0:
-            block = candidates[0]
+    for raw in clean[start_idx:]:
+        if block and is_stop(raw):
+            break
+        if is_skip(raw):
+            continue
+        block.append(raw)
+        if len(block) > 90:
+            break
 
-    # 2) Nouzový režim pro případ, že se web slije do jednoho dlouhého řádku.
-    if not block:
-        blob = clean_line(" ".join(clean))
+    if not any(PRICE_RE.search(x) for x in block):
+        blob = clean_line(" ".join(clean[start_idx:]))
         blob_norm = norm(blob)
-        start_pos = blob_norm.find("poledni nabidka 11:00")
-        if start_pos < 0:
-            start_pos = blob_norm.find(" polevky ")
-        stop_pos = blob_norm.find(" napoje k menu ", start_pos if start_pos >= 0 else 0)
-        if start_pos >= 0:
-            menu_blob = blob[start_pos: stop_pos if stop_pos > start_pos else len(blob)]
-            menu_blob = re.sub(r"\b(Polévky|Polední nabídka|Dnešní menu|Specialita týdne)\b", "\n\\1\n", menu_blob, flags=re.I)
-            menu_blob = re.sub(r"(\d{2,4}\s*Kč)", "\\1\n", menu_blob, flags=re.I)
-            block = [clean_line(x) for x in menu_blob.split("\n") if clean_line(x)]
+        stop_pos = blob_norm.find(" napoje k menu ")
+        if stop_pos > 0:
+            blob = blob[:stop_pos]
+        blob = re.sub(r"\b(Polévky|Polední nabídka|Dnešní menu|Specialita týdne)\b", r"\n\1\n", blob, flags=re.I)
+        blob = re.sub(r"(\d{2,4}\s*Kč)", r"\1\n", blob, flags=re.I)
+        block = [clean_line(x) for x in blob.split("\n") if clean_line(x)]
 
     items: list[MenuItem] = []
     section = ""
 
-    for raw in block:
-        raw = clean_line(raw)
-        if not raw or is_skip(raw):
-            continue
+    def add_item(title: str, price: str, note: str = "", forced_section: str | None = None) -> None:
+        title = strip_trailing_price_from_title(title)
+        note = strip_trailing_price_from_title(note)
+        if not title or not price:
+            return
+        low_title = norm(title)
+        if any(j in low_title for j in STOP_CONTAINS):
+            return
+        if any(bad in low_title for bad in ("napoje", "coca-cola", "limonada", "natura", "kava dle vyberu")):
+            return
+        items.append(MenuItem(title=title, price=normalize_price(price), note=note, section=forced_section or section.title()))
+
+    i = 0
+    while i < len(block):
+        raw = clean_line(block[i])
         low = norm(raw)
+        if not raw or is_skip(raw):
+            i += 1
+            continue
         if is_stop(raw):
             break
-
         if "poledni nabidka" in low and not PRICE_RE.search(raw):
             section = "Polední nabídka"
+            i += 1
             continue
         if low == "polevky":
             section = "Polévky"
+            i += 1
             continue
         if low == "specialita tydne":
             section = "Specialita týdne"
+            i += 1
             continue
-
         if low.startswith("dnesni menu"):
             title, price = extract_price(raw)
             if price:
-                items.append(MenuItem(title=strip_trailing_price_from_title(title), price=normalize_price(price), section="Dnešní menu"))
-                section = "Dnešní menu"
-            else:
-                section = "Dnešní menu"
-            if len(items) >= max_items:
-                break
+                # Následující řádky u Dnešního menu jsou součástí setu. Na TV je
+                # kvůli prostoru necháme jako jednu položku s cenou setu.
+                add_item("Dnešní menu", price, forced_section="Dnešní menu")
+            section = "Dnešní menu"
+            i += 1
             continue
 
         title, price = extract_price(raw)
         if price:
-            item = MenuItem(
-                title=strip_trailing_price_from_title(title),
-                price=normalize_price(price),
-                section=section.title() if section else "",
-            )
-            if item.title:
-                items.append(item)
+            note = ""
+            if i + 1 < len(block):
+                nxt = clean_line(block[i + 1])
+                if nxt and not PRICE_RE.search(nxt) and not is_skip(nxt) and not is_stop(nxt):
+                    nxt_low = norm(nxt)
+                    if nxt_low not in {"polevky", "poledni nabidka", "specialita tydne"} and not nxt_low.startswith("dnesni menu"):
+                        note = nxt
+                        i += 1
+            add_item(title, price, note=note)
             if len(items) >= max_items:
                 break
-            continue
-
-        if items and len(raw) <= 160:
-            prev = items[-1]
-            prev.note = clean_line(f"{prev.note} {raw}" if prev.note else raw)
+        i += 1
 
     cleaned: list[MenuItem] = []
     seen: set[tuple[str, str]] = set()
@@ -1360,23 +1376,12 @@ def parse_kvetnice(lines: list[str], max_items: int, target_day: str) -> list[Me
         item.price = normalize_price(item.price)
         if not item.title or not item.price:
             continue
-        title_low = item.title.lower()
-        if any(j in title_low for j in STOP_CONTAINS):
-            continue
         key = (item.title.lower(), item.price.lower())
         if key in seen:
             continue
         seen.add(key)
         cleaned.append(item)
-
-    if cleaned:
-        return cleaned[:max_items]
-
-    # 3) Květnice často po skončení poledního menu vrací jen neúplné zbytky
-    # jídel bez cen nebo obecný obsah webu. Ty už raději nezobrazujeme.
-    # Díky empty_is_ok=True se v dashboardu ukáže informace, že menu zatím
-    # není dostupné, místo potenciálně zavádějících položek.
-    return []
+    return cleaned[:max_items]
 
 def parse_paloucek(lines: list[str], max_items: int, target_day: str) -> list[MenuItem]:
     # Palouček má nahoře polévky a zvýhodněné menu, které v dashboardu nechceme.
@@ -1409,6 +1414,72 @@ PARSERS: dict[str, Callable[[list[str], int, str], list[MenuItem]]] = {
     "paloucek": parse_paloucek,
 }
 
+
+
+def postprocess_restaurant_items(name: str, items: list[MenuItem]) -> list[MenuItem]:
+    """Restaurant-specific cleanup after parsing.
+
+    U Bansethů on DnešníOběd.cz sometimes emits category headings as separate
+    rows without price. The generic parser then prepends that heading to the
+    next priced dish, e.g. "Polévka je grunt Silný hovězí vývar...".
+    For the TV dashboard we want only dish names and prices, without these
+    long editorial category labels.
+    """
+    if name != "U Bansethů":
+        return items
+
+    pure_heading_norms = {
+        "polevka je grunt",
+        "dnesni delikatesy",
+        "patecni klasika",
+        "rizky rizky a zase rizky",
+        "z hrnce nasich kucharskych mistru",
+        "dezert",
+        "dezerty",
+        "stala nabidka",
+        "dnesni menu",
+    }
+
+    # Ordered from longer/more specific to shorter. These labels may be glued
+    # to the beginning of the actual dish title by parse_items_from_lines().
+    heading_prefixes = [
+        "Řízky, řízky a zase řízky",
+        "Z hrnce našich kuchařských mistrů",
+        "Polévka je grunt",
+        "Páteční klasika",
+        "Dnešní delikatesy",
+        "Dezert",
+        "Dezerty",
+    ]
+
+    def strip_bansethu_heading_prefix(title: str) -> str:
+        value = clean_line(title)
+        value_norm = without_diacritics(value).strip().lower()
+        for prefix in heading_prefixes:
+            prefix_norm = without_diacritics(prefix).strip().lower()
+            if value_norm == prefix_norm:
+                return ""
+            if value_norm.startswith(prefix_norm + " "):
+                # Use the original prefix length for a clean visible cut.
+                value = clean_line(value[len(prefix):])
+                value_norm = without_diacritics(value).strip().lower()
+        return value
+
+    cleaned: list[MenuItem] = []
+    for item in items:
+        title = strip_bansethu_heading_prefix(item.title)
+        title_norm = without_diacritics(clean_line(title)).strip().lower()
+        # Drop pure category headings if they accidentally entered as items.
+        if not title or title_norm in pure_heading_norms:
+            continue
+        if not item.price:
+            # On DnešníOběd.cz valid lunch rows have prices; unpriced rows tend
+            # to be labels/navigation. Keep this conservative for Bansethů only.
+            continue
+        item.title = title
+        item.section = ""
+        cleaned.append(item)
+    return cleaned
 
 def get_menu(
     cfg: Restaurant,
@@ -1450,6 +1521,7 @@ def get_menu(
                         errors.append(f"Zomato widget {urlparse(widget_url).netloc}: {widget_exc}")
                 if not items:
                     items = parser(lines, cfg.max_items, target_day)
+            items = postprocess_restaurant_items(cfg.name, items)
             if dump_dir:
                 dump_dir.mkdir(parents=True, exist_ok=True)
                 safe = re.sub(r"[^A-Za-z0-9_-]+", "_", cfg.name.lower())
@@ -1470,12 +1542,16 @@ def get_menu(
                     page, url, parser, cfg.max_items, target_day, errors, dump_dir, cfg.name
                 )
                 if rss_items and rss_url:
-                    if cache is not None:
-                        cache_set(cache, cfg, target_day, rss_url, rss_items)
-                    return {
-                        "name": cfg.name, "url": rss_url, "items": rss_items, "error": None,
-                        "empty_ok": False, "cached": False, "source_type": "rss",
-                    }
+                    rss_items = postprocess_restaurant_items(cfg.name, rss_items)
+                    if not rss_items:
+                        errors.append(f"RSS {urlparse(rss_url).netloc}: pouze sekční nadpisy / bez položek")
+                    else:
+                        if cache is not None:
+                            cache_set(cache, cfg, target_day, rss_url, rss_items)
+                        return {
+                            "name": cfg.name, "url": rss_url, "items": rss_items, "error": None,
+                            "empty_ok": False, "cached": False, "source_type": "rss",
+                        }
 
             if cfg.empty_is_ok or contains_empty_marker(lines):
                 # Důležité: u restaurací s více zdroji nesmíme skončit hned na prvním
@@ -1778,7 +1854,7 @@ a {{
 
 
 def main(argv: list[str] | None = None) -> int:
-    ap = argparse.ArgumentParser(description="Polední menu dashboard v5.6")
+    ap = argparse.ArgumentParser(description="Polední menu dashboard v5.7")
     ap.add_argument("--day", default=None, help="pondeli, utery, streda, ctvrtek nebo patek. Výchozí je dnešní pracovní den.")
     ap.add_argument("--output", default="dashboard.html", help="Kam uložit HTML. Relativní cesta se ukládá vedle skriptu.")
     ap.add_argument("--refresh", type=int, default=1800, help="Auto-refresh v sekundách")
