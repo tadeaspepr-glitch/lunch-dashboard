@@ -3,14 +3,14 @@ name: Update lunch dashboard
 on:
   workflow_dispatch:
   schedule:
-    # GitHub Actions používá UTC.
-    # 07:30 UTC = 09:30 v Česku v letním čase
-    # 08:30 UTC = 10:30 v Česku v letním čase
-    # 09:30 UTC = 11:30 v Česku v letním čase
-    - cron: "45 6 * * 1-5"
-    - cron: "30 7 * * 1-5"
-    - cron: "30 8 * * 1-5"
+    - cron: "45 8 * * 1-5"
+      timezone: "Europe/Prague"
     - cron: "30 9 * * 1-5"
+      timezone: "Europe/Prague"
+    - cron: "30 10 * * 1-5"
+      timezone: "Europe/Prague"
+    - cron: "30 11 * * 1-5"
+      timezone: "Europe/Prague"
 
 permissions:
   contents: read
