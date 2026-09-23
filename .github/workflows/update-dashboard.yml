@@ -11,6 +11,7 @@ permissions:
   contents: read
   pages: write
   id-token: write
+  actions: write   # kvůli ukládání cache
 
 concurrency:
   group: pages
@@ -65,9 +66,26 @@ jobs:
           python -m pip install --upgrade pip
           pip install -r requirements.txt
 
+      - name: Restore menu cache
+        uses: actions/cache/restore@v4
+        with:
+          path: .lunch_menu_cache.json
+          key: lunch-cache-${{ github.run_id }}-${{ github.run_attempt }}
+          restore-keys: |
+            lunch-cache-
+
       - name: Generate dashboard
+        env:
+          TZ: Europe/Prague
         run: |
-          python lunch_dashboard_engine_v69.py --output public/index.html --no-open --no-cache --report public/debug_report.md
+          python lunch_dashboard_engine_v69.py --output public/index.html --no-open --cache-file .lunch_menu_cache.json --report public/debug_report.md
+
+      - name: Save menu cache
+        if: always()
+        uses: actions/cache/save@v4
+        with:
+          path: .lunch_menu_cache.json
+          key: lunch-cache-${{ github.run_id }}-${{ github.run_attempt }}
 
       - name: Upload GitHub Pages artifact
         uses: actions/upload-pages-artifact@v3
