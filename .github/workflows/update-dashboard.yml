@@ -11,7 +11,7 @@ permissions:
   contents: read
   pages: write
   id-token: write
-  actions: write   # kvůli ukládání cache
+  actions: write   # kvůli ukládání cache menu
 
 concurrency:
   group: pages
@@ -77,8 +77,12 @@ jobs:
       - name: Generate dashboard
         env:
           TZ: Europe/Prague
+          # 👉 API KLÍČ GOLEMIO: tento řádek neměňte.
+          # 👉 Klíč vložte v GitHubu: Settings → Secrets and variables → Actions
+          # 👉 → New repository secret, název GOLEMIO_API_KEY, hodnota = váš klíč.
+          GOLEMIO_API_KEY: ${{ secrets.GOLEMIO_API_KEY }}
         run: |
-          python lunch_dashboard_engine_v69.py --output public/index.html --no-open --cache-file .lunch_menu_cache.json --report public/debug_report.md
+          python lunch_dashboard_engine_v70.py --output public/index.html --no-open --cache-file .lunch_menu_cache.json --report public/debug_report.md
 
       - name: Save menu cache
         if: always()
@@ -89,18 +93,3 @@ jobs:
 
       - name: Upload GitHub Pages artifact
         uses: actions/upload-pages-artifact@v3
-        with:
-          path: public
-
-  deploy:
-    needs: build
-    if: needs.build.result == 'success'
-    runs-on: ubuntu-latest
-    environment:
-      name: github-pages
-      url: ${{ steps.deployment.outputs.page_url }}
-
-    steps:
-      - name: Deploy to GitHub Pages
-        id: deployment
-        uses: actions/deploy-pages@v4
