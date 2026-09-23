@@ -82,7 +82,7 @@ jobs:
           # 👉 → New repository secret, název GOLEMIO_API_KEY, hodnota = váš klíč.
           GOLEMIO_API_KEY: ${{ secrets.GOLEMIO_API_KEY }}
         run: |
-          python lunch_dashboard_engine_v70.py --output public/index.html --no-open --cache-file .lunch_menu_cache.json --report public/debug_report.md
+          python lunch_dashboard_engine_v71.py --output public/index.html --no-open --cache-file .lunch_menu_cache.json --report public/debug_report.md
 
       - name: Save menu cache
         if: always()
